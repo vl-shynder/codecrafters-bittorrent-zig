@@ -50,8 +50,15 @@ const Value = union(enum) {
                 }
                 break :blk count;
             },
-            .dict => |_| blk: {
-                break :blk 1;
+            .dict => |dict| blk: {
+                var count: usize = 0;
+                var it = dict.iterator();
+                while (it.next()) |entry| {
+                    const keyVal = Value{ .string = entry.key_ptr.* };
+                    count += keyVal.lenWithSpecifier();
+                    count += entry.value_ptr.lenWithSpecifier();
+                }
+                break :blk count;
             },
         };
     }
