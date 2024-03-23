@@ -17,15 +17,32 @@ pub fn main() !void {
     const command = args[1];
 
     if (std.mem.eql(u8, command, "decode")) {
-        // Uncomment this block to pass the first stage
         const encodedStr = args[2];
-        const decoded = decode(encodedStr) catch {
+        const decoded = Value.decode(encodedStr) catch {
             try stdout.print("Couldn't decode value\n", .{});
             std.process.exit(1);
         };
 
         var string = StringArrayList.init(allocator);
-        try writeDecoded(decoded, string.writer());
+        try decoded.dumpToWriter(string.writer());
+        const jsonStr = try string.toOwnedSlice();
+        try stdout.print("{s}\n", .{jsonStr});
+    } else if (std.mem.eql(u8, command, "info")) {
+        const filePath = args[2];
+
+        var file = try std.fs.cwd().openFile(filePath, .{});
+        var bufReader = std.io.bufferedReader(file.reader());
+        var reader = bufReader.reader();
+
+        var buf = try reader.readAllAlloc(allocator, 1024 * 1024);
+
+        const decoded = Value.decode(buf[0..]) catch {
+            try stdout.print("Couldn't decode value\n", .{});
+            std.process.exit(1);
+        };
+
+        var string = StringArrayList.init(allocator);
+        try writeDecodedInfo(decoded, string.writer());
         const jsonStr = try string.toOwnedSlice();
         try stdout.print("{s}\n", .{jsonStr});
     }
@@ -36,6 +53,112 @@ const Value = union(enum) {
     integer: []const u8,
     list: []Value,
     dict: Dictionary,
+
+    fn decode(encodedValue: []const u8) !@This() {
+        switch (encodedValue[0]) {
+            '0'...'9' => {
+                const firstColon = std.mem.indexOf(u8, encodedValue, ":");
+                if (firstColon == null) {
+                    return error.InvalidArgument;
+                }
+                const strLen = try std.fmt.parseInt(usize, encodedValue[0..firstColon.?], 10);
+                const startPos = firstColon.? + 1;
+                const endPos = startPos + strLen;
+                return .{
+                    .string = encodedValue[startPos..endPos],
+                };
+            },
+            'i' => {
+                const endOfNum = std.mem.indexOf(u8, encodedValue, "e");
+                if (endOfNum == null) {
+                    return error.InvalidArgument;
+                }
+                return .{
+                    .integer = encodedValue[1..endOfNum.?],
+                };
+            },
+            'l' => {
+                var cursor: usize = 1;
+                var list = std.ArrayList(Value).init(allocator);
+                while (cursor < encodedValue.len) {
+                    if (encodedValue[cursor] == 'e') {
+                        cursor += 1;
+                        break;
+                    }
+                    const val = try decode(encodedValue[cursor..]);
+                    try list.append(val);
+                    cursor += val.lenWithSpecifier();
+                }
+
+                return .{
+                    .list = try list.toOwnedSlice(),
+                };
+            },
+            'd' => {
+                var cursor: usize = 1;
+                var dict = Dictionary.init(allocator);
+                while (cursor < encodedValue.len and encodedValue[cursor] != 23) {
+                    if (encodedValue[cursor] == 'e') {
+                        cursor += 1;
+                        break;
+                    }
+
+                    const key = try decode(encodedValue[cursor..]);
+                    if (!key.isString()) {
+                        try stdout.print("Dectionary value for key is not a string. key = {any},\n", .{key});
+                    }
+                    cursor += key.lenWithSpecifier();
+                    const value = try decode(encodedValue[cursor..]);
+                    cursor += value.lenWithSpecifier();
+                    try dict.put(key.string, value);
+                }
+
+                return .{
+                    .dict = dict,
+                };
+            },
+            else => {
+                try stdout.print("Unknown case\n", .{});
+                std.process.exit(1);
+            },
+        }
+    }
+
+    fn dumpToWriter(self: @This(), writer: StringArrayList.Writer) !void {
+        switch (self) {
+            .string => |s| {
+                try std.json.stringify(s, .{}, writer);
+            },
+            .integer => |int| {
+                try writer.writeAll(int);
+            },
+            .list => |l| {
+                try writer.writeByte('[');
+                for (l, 0..) |item, i| {
+                    try item.dumpToWriter(writer);
+                    if (i != l.len - 1) try writer.writeByte(',');
+                }
+                try writer.writeByte(']');
+            },
+            .dict => |d| {
+                try writer.writeByte('{');
+                var it = d.iterator();
+                var index: usize = 0;
+                while (it.next()) |entry| {
+                    index += 1;
+                    try writer.writeByte('"');
+                    try writer.writeAll(entry.key_ptr.*);
+                    try writer.writeByte('"');
+                    try writer.writeByte(':');
+                    try entry.value_ptr.dumpToWriter(writer);
+                    if (index != d.count()) {
+                        try writer.writeByte(',');
+                    }
+                }
+                try writer.writeByte('}');
+            },
+        }
+    }
 
     fn lenWithSpecifier(self: @This()) usize {
         return switch (self) {
@@ -71,103 +194,6 @@ const Value = union(enum) {
     }
 };
 
-fn decode(encodedValue: []const u8) !Value {
-    switch (encodedValue[0]) {
-        '0'...'9' => {
-            const firstColon = std.mem.indexOf(u8, encodedValue, ":");
-            if (firstColon == null) {
-                return error.InvalidArgument;
-            }
-            const strLen = try std.fmt.parseInt(usize, encodedValue[0..firstColon.?], 10);
-            const startPos = firstColon.? + 1;
-            const endPos = startPos + strLen;
-            return .{
-                .string = encodedValue[startPos..endPos],
-            };
-        },
-        'i' => {
-            const endOfNum = std.mem.indexOf(u8, encodedValue, "e");
-            if (endOfNum == null) {
-                return error.InvalidArgument;
-            }
-            return .{
-                .integer = encodedValue[1..endOfNum.?],
-            };
-        },
-        'l' => {
-            var cursor: usize = 1;
-            var list = std.ArrayList(Value).init(allocator);
-            while (cursor < encodedValue.len and encodedValue[cursor] != 'e') {
-                const val = try decode(encodedValue[cursor..]);
-                try list.append(val);
-                cursor += val.lenWithSpecifier();
-            }
-
-            return .{
-                .list = try list.toOwnedSlice(),
-            };
-        },
-        'd' => {
-            var cursor: usize = 1;
-            var dict = Dictionary.init(allocator);
-            while (cursor < encodedValue.len and encodedValue[cursor] != 'e') {
-                const key = try decode(encodedValue[cursor..]);
-                if (!key.isString()) {
-                    try stdout.print("Dectionary value for key is not a string. key = {any},\n", .{key});
-                }
-                cursor += key.lenWithSpecifier();
-                const value = try decode(encodedValue[cursor..]);
-                cursor += value.lenWithSpecifier();
-                try dict.put(key.string, value);
-            }
-
-            return .{
-                .dict = dict,
-            };
-        },
-        else => {
-            try stdout.print("Unknown case {c}\n", .{encodedValue[0]});
-            std.process.exit(1);
-        },
-    }
-}
-
-fn writeDecoded(val: Value, writer: StringArrayList.Writer) !void {
-    switch (val) {
-        .string => |s| {
-            try std.json.stringify(s, .{}, writer);
-        },
-        .integer => |int| {
-            try writer.writeAll(int);
-        },
-        .list => |l| {
-            try writer.writeByte('[');
-            for (l, 0..) |item, i| {
-                try writeDecoded(item, writer);
-                if (i != l.len - 1) try writer.writeByte(',');
-            }
-            try writer.writeByte(']');
-        },
-        .dict => |d| {
-            try writer.writeByte('{');
-            var it = d.iterator();
-            var index: usize = 0;
-            while (it.next()) |entry| {
-                index += 1;
-                try writer.writeByte('"');
-                try writer.writeAll(entry.key_ptr.*);
-                try writer.writeByte('"');
-                try writer.writeByte(':');
-                try writeDecoded(entry.value_ptr.*, writer);
-                if (index != d.count()) {
-                    try writer.writeByte(',');
-                }
-            }
-            try writer.writeByte('}');
-        },
-    }
-}
-
 fn countNumDigits(n: usize) usize {
     var count: usize = 1;
     var num = n;
@@ -188,4 +214,37 @@ fn printValue(val: Value) ![]const u8 {
             return buf[0..];
         },
     };
+}
+
+fn writeDecodedInfo(decoded: Value, writer: StringArrayList.Writer) !void {
+    switch (decoded) {
+        .dict => |d| {
+            try writer.writeAll("Tracker URL: ");
+            const trackerURL = d.get("announce");
+            if (trackerURL) |urlValue| {
+                const url = try printValue(urlValue);
+                try writer.writeAll(url);
+            } else {
+                try stdout.print("Can't find announce in provided file\n", .{});
+            }
+
+            try writer.writeByte('\n');
+            try writer.writeAll("Length: ");
+            const infoMapVal = d.get("info");
+            if (infoMapVal) |infoVal| {
+                const lengthMapVal = infoVal.dict.get("length");
+                if (lengthMapVal) |lengthVal| {
+                    const length = try printValue(lengthVal);
+                    try writer.writeAll(length);
+                } else {
+                    try stdout.print("Can't find length in provided file\n", .{});
+                }
+                try stdout.print("Can't find info in provided file\n", .{});
+            }
+        },
+        else => {
+            try stdout.print("Shouldn't be the case\n", .{});
+            std.process.exit(1);
+        },
+    }
 }
