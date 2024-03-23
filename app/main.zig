@@ -3,6 +3,7 @@ const stdout = std.io.getStdOut().writer();
 const allocator = std.heap.page_allocator;
 
 const StringArrayList = std.ArrayList(u8);
+const Dictionary = std.StringHashMap(Value);
 
 pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
@@ -34,6 +35,7 @@ const Value = union(enum) {
     string: []const u8,
     integer: []const u8,
     list: []Value,
+    dict: Dictionary,
 
     fn lenWithSpecifier(self: @This()) usize {
         return switch (self) {
@@ -48,6 +50,16 @@ const Value = union(enum) {
                 }
                 break :blk count;
             },
+            .dict => |_| blk: {
+                break :blk 1;
+            },
+        };
+    }
+
+    fn isString(self: @This()) bool {
+        return switch (self) {
+            .string => true,
+            else => false,
         };
     }
 };
@@ -88,8 +100,28 @@ fn decode(encodedValue: []const u8) !Value {
                 .list = try list.toOwnedSlice(),
             };
         },
+        'd' => {
+            var cursor: usize = 1;
+            var dict = Dictionary.init(allocator);
+            while (cursor < encodedValue.len and encodedValue[cursor] != 'e') {
+                try stdout.print("Cursor at = {}\n", .{cursor});
+                const key = try decode(encodedValue[cursor..]);
+                if (!key.isString()) {
+                    try stdout.print("Dectionary value for key is not a string. key = {any},\n", .{key});
+                }
+                cursor += key.lenWithSpecifier();
+                const value = try decode(encodedValue[cursor..]);
+                cursor += value.lenWithSpecifier();
+                try stdout.print("key = {!s}, value = {!s}\n", .{ printValue(key), printValue(value) });
+                try dict.put(key.string, value);
+            }
+
+            return .{
+                .dict = dict,
+            };
+        },
         else => {
-            try stdout.print("Unknown case {c}", .{encodedValue[0]});
+            try stdout.print("Unknown case {c}\n", .{encodedValue[0]});
             std.process.exit(1);
         },
     }
@@ -111,6 +143,23 @@ fn writeDecoded(val: Value, writer: StringArrayList.Writer) !void {
             }
             try writer.writeByte(']');
         },
+        .dict => |d| {
+            try writer.writeByte('{');
+            var it = d.iterator();
+            var index: usize = 0;
+            while (it.next()) |entry| {
+                index += 1;
+                try writer.writeByte('"');
+                try writer.writeAll(entry.key_ptr.*);
+                try writer.writeByte('"');
+                try writer.writeByte(':');
+                try writeDecoded(entry.value_ptr.*, writer);
+                if (index != d.count()) {
+                    try writer.writeByte(',');
+                }
+            }
+            try writer.writeByte('}');
+        },
     }
 }
 
@@ -122,4 +171,16 @@ fn countNumDigits(n: usize) usize {
         count += 1;
     }
     return count;
+}
+
+fn printValue(val: Value) ![]const u8 {
+    return switch (val) {
+        .string => |s| s,
+        .integer => |i| i,
+        else => |v| {
+            var buf = [_]u8{'.'} ** 1000;
+            _ = try std.fmt.bufPrint(&buf, "{}", .{v});
+            return buf[0..];
+        },
+    };
 }
