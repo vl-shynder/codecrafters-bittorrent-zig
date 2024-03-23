@@ -2,6 +2,10 @@ const std = @import("std");
 const stdout = std.io.getStdOut().writer();
 const allocator = std.heap.page_allocator;
 
+// pub const RED = "\x1b[31m";
+// pub const GREEN = "\x1b[32m";
+// pub const RESET = "\x1b[0m";
+
 const StringArrayList = std.ArrayList(u8);
 const Dictionary = std.StringArrayHashMap(Value);
 
@@ -117,6 +121,42 @@ const Value = union(enum) {
         }
     }
 
+    fn encodeBencode(self: @This()) ![]const u8 {
+        var encoded = StringArrayList.init(allocator);
+        switch (self) {
+            .string => |str| {
+                const encStr = try std.fmt.allocPrint(allocator, "{}:{s}", .{ str.len, str });
+                try encoded.appendSlice(encStr);
+            },
+            .integer => |int| {
+                const encInt = try std.fmt.allocPrint(allocator, "i{s}e", .{int});
+                try encoded.appendSlice(encInt);
+            },
+            .list => |list| {
+                try encoded.append('l');
+                for (list) |item| {
+                    const encodedItem = try item.encodeBencode();
+                    try encoded.appendSlice(encodedItem);
+                }
+                try encoded.append('e');
+            },
+            .dict => |dict| {
+                try encoded.append('d');
+                var it = dict.iterator();
+                while (it.next()) |entry| {
+                    const keyVal = Value{ .string = entry.key_ptr.* };
+                    const encKey = try keyVal.encodeBencode();
+                    const encEl = try entry.value_ptr.encodeBencode();
+                    try encoded.appendSlice(encKey);
+                    try encoded.appendSlice(encEl);
+                }
+                try encoded.append('e');
+            },
+        }
+
+        return encoded.toOwnedSlice();
+    }
+
     fn dumpToWriter(self: @This(), writer: StringArrayList.Writer) !void {
         switch (self) {
             .string => |s| {
@@ -153,6 +193,18 @@ const Value = union(enum) {
         }
     }
 
+    fn print(self: @This()) ![]const u8 {
+        return switch (self) {
+            .string => |s| s,
+            .integer => |i| i,
+            else => |v| {
+                var buf = [_]u8{'.'} ** 1000;
+                _ = try std.fmt.bufPrint(&buf, "{}", .{v});
+                return buf[0..];
+            },
+        };
+    }
+
     fn lenWithSpecifier(self: @This()) usize {
         return switch (self) {
             // 5:hello -> "hello".len + 5 + ':'
@@ -179,6 +231,16 @@ const Value = union(enum) {
         };
     }
 
+    fn len(self: @This()) !usize {
+        return switch (self) {
+            .string => |str| str.len,
+            else => {
+                try stdout.print("\x1b[31m .len() was called on a wrong value type \x1b[0m\n", .{});
+                return 0;
+            },
+        };
+    }
+
     fn isString(self: @This()) bool {
         return switch (self) {
             .string => true,
@@ -197,25 +259,13 @@ fn countNumDigits(n: usize) usize {
     return count;
 }
 
-fn printValue(val: Value) ![]const u8 {
-    return switch (val) {
-        .string => |s| s,
-        .integer => |i| i,
-        else => |v| {
-            var buf = [_]u8{'.'} ** 1000;
-            _ = try std.fmt.bufPrint(&buf, "{}", .{v});
-            return buf[0..];
-        },
-    };
-}
-
 fn writeDecodedInfo(decoded: Value, writer: StringArrayList.Writer) !void {
     switch (decoded) {
         .dict => |d| {
             try writer.writeAll("Tracker URL: ");
             const trackerURL = d.get("announce");
             if (trackerURL) |urlValue| {
-                const url = try printValue(urlValue);
+                const url = try urlValue.print();
                 try writer.writeAll(url);
             } else {
                 try stdout.print("Can't find announce in provided file\n", .{});
@@ -227,11 +277,20 @@ fn writeDecodedInfo(decoded: Value, writer: StringArrayList.Writer) !void {
             if (infoMapVal) |infoVal| {
                 const lengthMapVal = infoVal.dict.get("length");
                 if (lengthMapVal) |lengthVal| {
-                    const length = try printValue(lengthVal);
+                    const length = try lengthVal.print();
                     try writer.writeAll(length);
                 } else {
                     try stdout.print("Can't find length in provided file\n", .{});
                 }
+
+                const encodedInfo = try infoVal.encodeBencode();
+                var hash: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
+                std.crypto.hash.Sha1.hash(encodedInfo, &hash, .{});
+
+                try writer.writeByte('\n');
+                try writer.writeAll("Info Hash: ");
+                try writer.writeAll(&hash);
+            } else {
                 try stdout.print("Can't find info in provided file\n", .{});
             }
         },
