@@ -104,7 +104,6 @@ fn decode(encodedValue: []const u8) !Value {
             var cursor: usize = 1;
             var dict = Dictionary.init(allocator);
             while (cursor < encodedValue.len and encodedValue[cursor] != 'e') {
-                try stdout.print("Cursor at = {}\n", .{cursor});
                 const key = try decode(encodedValue[cursor..]);
                 if (!key.isString()) {
                     try stdout.print("Dectionary value for key is not a string. key = {any},\n", .{key});
@@ -112,7 +111,6 @@ fn decode(encodedValue: []const u8) !Value {
                 cursor += key.lenWithSpecifier();
                 const value = try decode(encodedValue[cursor..]);
                 cursor += value.lenWithSpecifier();
-                try stdout.print("key = {!s}, value = {!s}\n", .{ printValue(key), printValue(value) });
                 try dict.put(key.string, value);
             }
 
