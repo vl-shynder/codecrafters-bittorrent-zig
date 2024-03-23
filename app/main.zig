@@ -32,7 +32,7 @@ pub fn main() !void {
         }
         if (decoder.isNumber()) {
             const decodedNum = decoder.decodeNumber() catch {
-                try stdout.print("Incalid encoded value\n", .{});
+                try stdout.print("Invalid encoded value\n", .{});
                 std.process.exit(1);
             };
             try stdout.print("{}\n", .{decodedNum});
@@ -61,11 +61,11 @@ const BencodeDecoder = struct {
         return &self.encodedValue[firstColon.? + 1 ..];
     }
 
-    fn decodeNumber(self: Self) !i32 {
+    fn decodeNumber(self: Self) !i64 {
         const endOfNum = std.mem.indexOf(u8, self.encodedValue, "e");
         if (endOfNum == null) {
             return error.InvalidArgument;
         }
-        return std.fmt.parseInt(i32, self.encodedValue[1..endOfNum.?], 10);
+        return std.fmt.parseInt(i64, self.encodedValue[1..endOfNum.?], 10);
     }
 };
