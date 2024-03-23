@@ -118,7 +118,7 @@ const Value = union(enum) {
                 };
             },
             else => {
-                try stdout.print("Unknown case\n", .{});
+                try stdout.print("Unknown case {} \n", .{encodedValue[0]});
                 std.process.exit(1);
             },
         }
