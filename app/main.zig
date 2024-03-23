@@ -271,13 +271,13 @@ fn writeDecodedInfo(decoded: Value, writer: StringArrayList.Writer) !void {
                 try stdout.print("Can't find announce in provided file\n", .{});
             }
 
-            try writer.writeByte('\n');
-            try writer.writeAll("Length: ");
             const infoMapVal = d.get("info");
             if (infoMapVal) |infoVal| {
                 const lengthMapVal = infoVal.dict.get("length");
                 if (lengthMapVal) |lengthVal| {
                     const length = try lengthVal.print();
+                    try writer.writeByte('\n');
+                    try writer.writeAll("Length: ");
                     try writer.writeAll(length);
                 } else {
                     try stdout.print("Can't find length in provided file\n", .{});
@@ -290,6 +290,30 @@ fn writeDecodedInfo(decoded: Value, writer: StringArrayList.Writer) !void {
                 try writer.writeByte('\n');
                 try writer.writeAll("Info Hash: ");
                 try writer.writeAll(&std.fmt.bytesToHex(&hash, .lower));
+
+                const pieceLengthMapVal = infoVal.dict.get("piece length");
+                if (pieceLengthMapVal) |pieceLengthVal| {
+                    try writer.writeByte('\n');
+                    try writer.writeAll("Piece Length: ");
+                    try writer.writeAll(pieceLengthVal.integer);
+                } else {
+                    try stdout.print("Can't find piece length in provided file\n", .{});
+                }
+
+                const piecesMapVal = infoVal.dict.get("pieces");
+                if (piecesMapVal) |piecesVal| {
+                    try writer.writeByte('\n');
+                    try writer.writeAll("Piece Hashes:");
+
+                    var win = std.mem.window(u8, piecesVal.string, 20, 20);
+                    while (win.next()) |piece| {
+                        try writer.writeByte('\n');
+                        const h = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(piece[0..20])});
+                        try writer.writeAll(h);
+                    }
+                } else {
+                    try stdout.print("Can't find pieces in provided file\n", .{});
+                }
             } else {
                 try stdout.print("Can't find info in provided file\n", .{});
             }
