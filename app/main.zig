@@ -31,10 +31,8 @@ pub fn main() !void {
         const filePath = args[2];
 
         var file = try std.fs.cwd().openFile(filePath, .{});
-        var bufReader = std.io.bufferedReader(file.reader());
-        var reader = bufReader.reader();
 
-        var buf = try reader.readAllAlloc(allocator, 1024 * 1024);
+        var buf = try file.readToEndAlloc(allocator, 1024 * 1024);
 
         const decoded = Value.decode(buf[0..]) catch {
             try stdout.print("Couldn't decode value\n", .{});
@@ -97,12 +95,7 @@ const Value = union(enum) {
             'd' => {
                 var cursor: usize = 1;
                 var dict = Dictionary.init(allocator);
-                while (cursor < encodedValue.len and encodedValue[cursor] != 23) {
-                    if (encodedValue[cursor] == 'e') {
-                        cursor += 1;
-                        break;
-                    }
-
+                while (encodedValue[cursor] != 'e' and cursor < encodedValue.len) {
                     const key = try decode(encodedValue[cursor..]);
                     if (!key.isString()) {
                         try stdout.print("Dectionary value for key is not a string. key = {any},\n", .{key});
@@ -174,7 +167,7 @@ const Value = union(enum) {
                 break :blk count;
             },
             .dict => |dict| blk: {
-                var count: usize = 0;
+                var count: usize = 2;
                 var it = dict.iterator();
                 while (it.next()) |entry| {
                     const keyVal = Value{ .string = entry.key_ptr.* };
