@@ -2,6 +2,8 @@ const std = @import("std");
 const stdout = std.io.getStdOut().writer();
 const allocator = std.heap.page_allocator;
 
+const StringArrayList = std.ArrayList(u8);
+
 pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -16,56 +18,108 @@ pub fn main() !void {
     if (std.mem.eql(u8, command, "decode")) {
         // Uncomment this block to pass the first stage
         const encodedStr = args[2];
-        const decoder = BencodeDecoder{
-            .encodedValue = encodedStr,
+        const decoded = decode(encodedStr) catch {
+            try stdout.print("Couldn't decode value\n", .{});
+            std.process.exit(1);
         };
 
-        if (decoder.isString()) {
-            const decodedStr = decoder.decodeString() catch {
-                try stdout.print("Invalid encoded value\n", .{});
-                std.process.exit(1);
-            };
-            var string = std.ArrayList(u8).init(allocator);
-            try std.json.stringify(decodedStr.*, .{}, string.writer());
-            const jsonStr = try string.toOwnedSlice();
-            try stdout.print("{s}\n", .{jsonStr});
-        }
-        if (decoder.isNumber()) {
-            const decodedNum = decoder.decodeNumber() catch {
-                try stdout.print("Invalid encoded value\n", .{});
-                std.process.exit(1);
-            };
-            try stdout.print("{}\n", .{decodedNum});
-        }
+        var string = StringArrayList.init(allocator);
+        try writeDecoded(decoded, string.writer());
+        const jsonStr = try string.toOwnedSlice();
+        try stdout.print("{s}\n", .{jsonStr});
     }
 }
 
-const BencodeDecoder = struct {
-    encodedValue: []const u8,
+const Value = union(enum) {
+    string: []const u8,
+    integer: []const u8,
+    list: []Value,
 
-    const Self = @This();
-
-    fn isString(self: Self) bool {
-        return self.encodedValue[0] >= '0' and self.encodedValue[0] <= '9';
-    }
-
-    fn isNumber(self: Self) bool {
-        return self.encodedValue[0] == 'i';
-    }
-
-    fn decodeString(self: Self) !*const []const u8 {
-        const firstColon = std.mem.indexOf(u8, self.encodedValue, ":");
-        if (firstColon == null) {
-            return error.InvalidArgument;
-        }
-        return &self.encodedValue[firstColon.? + 1 ..];
-    }
-
-    fn decodeNumber(self: Self) !i64 {
-        const endOfNum = std.mem.indexOf(u8, self.encodedValue, "e");
-        if (endOfNum == null) {
-            return error.InvalidArgument;
-        }
-        return std.fmt.parseInt(i64, self.encodedValue[1..endOfNum.?], 10);
+    fn lenWithSpecifier(self: @This()) usize {
+        return switch (self) {
+            // 5:hello -> "hello".len + 5 + ':'
+            .string => |str| str.len + countNumDigits(str.len) + 1,
+            // i52e -> "52".len + 'i' + 'e'
+            .integer => |int| int.len + 2,
+            .list => |l| blk: {
+                var count: usize = 2;
+                for (l) |item| {
+                    count += item.lenWithSpecifier();
+                }
+                break :blk count;
+            },
+        };
     }
 };
+
+fn decode(encodedValue: []const u8) !Value {
+    switch (encodedValue[0]) {
+        '0'...'9' => {
+            const firstColon = std.mem.indexOf(u8, encodedValue, ":");
+            if (firstColon == null) {
+                return error.InvalidArgument;
+            }
+            const strLen = try std.fmt.parseInt(usize, encodedValue[0..firstColon.?], 10);
+            const startPos = firstColon.? + 1;
+            const endPos = startPos + strLen;
+            return .{
+                .string = encodedValue[startPos..endPos],
+            };
+        },
+        'i' => {
+            const endOfNum = std.mem.indexOf(u8, encodedValue, "e");
+            if (endOfNum == null) {
+                return error.InvalidArgument;
+            }
+            return .{
+                .integer = encodedValue[1..endOfNum.?],
+            };
+        },
+        'l' => {
+            var cursor: usize = 1;
+            var list = std.ArrayList(Value).init(allocator);
+            while (cursor < encodedValue.len and encodedValue[cursor] != 'e') {
+                const val = try decode(encodedValue[cursor..]);
+                try list.append(val);
+                cursor += val.lenWithSpecifier();
+            }
+
+            return .{
+                .list = try list.toOwnedSlice(),
+            };
+        },
+        else => {
+            try stdout.print("Unknown case {c}", .{encodedValue[0]});
+            std.process.exit(1);
+        },
+    }
+}
+
+fn writeDecoded(val: Value, writer: StringArrayList.Writer) !void {
+    switch (val) {
+        .string => |s| {
+            try std.json.stringify(s, .{}, writer);
+        },
+        .integer => |int| {
+            try writer.writeAll(int);
+        },
+        .list => |l| {
+            try writer.writeByte('[');
+            for (l, 0..) |item, i| {
+                try writeDecoded(item, writer);
+                if (i != l.len - 1) try writer.writeByte(',');
+            }
+            try writer.writeByte(']');
+        },
+    }
+}
+
+fn countNumDigits(n: usize) usize {
+    var count: usize = 1;
+    var num = n;
+    while (num > 9) {
+        num /= 10;
+        count += 1;
+    }
+    return count;
+}
