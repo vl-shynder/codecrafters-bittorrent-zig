@@ -3,7 +3,7 @@ const stdout = std.io.getStdOut().writer();
 const allocator = std.heap.page_allocator;
 
 const StringArrayList = std.ArrayList(u8);
-const Dictionary = std.StringHashMap(Value);
+const Dictionary = std.StringArrayHashMap(Value);
 
 pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
