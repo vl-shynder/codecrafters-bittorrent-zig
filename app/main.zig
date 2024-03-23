@@ -289,7 +289,7 @@ fn writeDecodedInfo(decoded: Value, writer: StringArrayList.Writer) !void {
 
                 try writer.writeByte('\n');
                 try writer.writeAll("Info Hash: ");
-                try writer.writeAll(std.fmt.bytesToHex(hash, .lower));
+                try writer.writeAll(&std.fmt.bytesToHex(&hash, .lower));
             } else {
                 try stdout.print("Can't find info in provided file\n", .{});
             }
