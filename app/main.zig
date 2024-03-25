@@ -47,6 +47,72 @@ pub fn main() !void {
         try writeDecodedInfo(decoded, string.writer());
         const jsonStr = try string.toOwnedSlice();
         try stdout.print("{s}\n", .{jsonStr});
+    } else if (std.mem.eql(u8, command, "peers")) {
+        const filePath = args[2];
+
+        var file = try std.fs.cwd().openFile(filePath, .{});
+        var buf = try file.readToEndAlloc(allocator, 1024 * 1024);
+
+        const decoded = Value.decode(buf[0..]) catch {
+            try stdout.print("Couldn't decode value\n", .{});
+            std.process.exit(1);
+        };
+
+        var client = std.http.Client{ .allocator = allocator };
+
+        const encodedInfo = try decoded.dict.get("info").?.encodeBencode();
+        var hash: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
+        std.crypto.hash.Sha1.hash(encodedInfo, &hash, .{});
+
+        var query = StringArrayList.init(allocator);
+        try query.appendSlice("?info_hash=");
+        const escaped_hash = try std.Uri.escapeString(allocator, &hash);
+        try query.appendSlice(escaped_hash);
+        try query.appendSlice("&peer_id=00112233445566778899");
+        try query.appendSlice("&port=6881");
+        try query.appendSlice("&uploaded=0");
+        try query.appendSlice("&downloaded=0");
+        try query.appendSlice("&left=");
+        try query.appendSlice(decoded.dict.get("info").?.dict.get("length").?.integer);
+        try query.appendSlice("&compact=1");
+
+        const url = try std.mem.concat(allocator, u8, &.{ try trackerUrl(decoded), query.items });
+        const uri = try std.Uri.parse(url);
+
+        var req = try client.request(.GET, uri, .{ .allocator = allocator }, .{});
+        defer req.deinit();
+
+        try req.start();
+        try req.finish();
+        try req.wait();
+
+        var body: [8046]u8 = undefined;
+        const len = try req.readAll(&body);
+        const decodedBody = Value.decode(body[0..len]) catch {
+            try stdout.print("Cant decode response\n", .{});
+            std.process.exit(1);
+        };
+
+        var resp = StringArrayList.init(allocator);
+        var writer = resp.writer();
+        try decodedBody.dumpToWriter(writer);
+
+        if (decodedBody != .dict) return error.InvalidResponse;
+        var peers_entry = decodedBody.dict.get("peers") orelse return error.InvalidResponse;
+        if (peers_entry != .string) return error.InvalidResponse;
+
+        var peers = std.mem.window(u8, peers_entry.string, 6, 6);
+        while (peers.next()) |peer| {
+            const ip = peer[0..4];
+            const port = std.mem.bytesToValue(u16, peer[4..6]);
+            try stdout.print("{d}.{d}.{d}.{d}:{d}\n", .{
+                ip[0],
+                ip[1],
+                ip[2],
+                ip[3],
+                std.mem.bigToNative(u16, port),
+            });
+        }
     }
 }
 
@@ -259,17 +325,23 @@ fn countNumDigits(n: usize) usize {
     return count;
 }
 
+fn trackerUrl(val: Value) ![]const u8 {
+    const trackerURL = val.dict.get("announce");
+    if (trackerURL) |urlValue| {
+        const url = try urlValue.print();
+        return url;
+    } else {
+        try stdout.print("Can't find announce in provided file\n", .{});
+    }
+    return error.CannotGetTrackerURL;
+}
+
 fn writeDecodedInfo(decoded: Value, writer: StringArrayList.Writer) !void {
     switch (decoded) {
         .dict => |d| {
             try writer.writeAll("Tracker URL: ");
-            const trackerURL = d.get("announce");
-            if (trackerURL) |urlValue| {
-                const url = try urlValue.print();
-                try writer.writeAll(url);
-            } else {
-                try stdout.print("Can't find announce in provided file\n", .{});
-            }
+            const url = try trackerUrl(decoded);
+            try writer.writeAll(url);
 
             const infoMapVal = d.get("info");
             if (infoMapVal) |infoVal| {
