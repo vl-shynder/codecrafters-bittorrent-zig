@@ -482,7 +482,7 @@ pub const Commands = struct {
             var rqst = Request{
                 .index = pieceIndex,
                 .begin = @intCast(i * blockSize),
-                .length = @intCast(lastBlockSize),
+                .length = @intCast(blockSize),
             };
 
             try rqst.send(writer);
@@ -507,16 +507,13 @@ pub const Commands = struct {
             @memcpy(piece[block.begin .. block.begin + block.block.len], block.block);
         }
 
-        // var hs: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
-        // std.crypto.hash.Sha1.hash(piece, &hs, .{});
+        var hs: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
+        std.crypto.hash.Sha1.hash(piece, &hs, .{});
 
-        // const myHash = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(&hs)});
-        // _ = myHash;
-        // const pieceHash = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(torrent.info.pieces[pieceIndex])});
-        // _ = pieceHash;
+        const myHash = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(&hs)});
+        const pieceHash = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(torrent.info.pieces[pieceIndex])});
 
-        // try stdout.print("my hash = {s}, their hash = {s}\n", .{ myHash, pieceHash });
-        // if (!std.mem.eql(u8, myHash, pieceHash)) return error.InvalidPieceHash;
+        if (!std.mem.eql(u8, myHash, pieceHash)) return error.InvalidPieceHash;
 
         const output = try std.fs.cwd().createFile(outputFile, .{});
         defer output.close();
