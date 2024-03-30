@@ -362,82 +362,7 @@ pub const Commands = struct {
         return serverHandshake;
     }
 
-    pub fn decode(allocator: std.mem.Allocator, encodedStr: []const u8) !void {
-        const decoded = decodeBencode(allocator, encodedStr) catch {
-            try stdout.print("Couldn't decode value\n", .{});
-            std.process.exit(1);
-        };
-
-        var string = StringArrayList.init(allocator);
-        try writeEncoded(decoded, string.writer());
-        const jsonStr = try string.toOwnedSlice();
-        try stdout.print("{s}\n", .{jsonStr});
-    }
-
-    pub fn info(allocator: std.mem.Allocator, filePath: []const u8) !void {
-        const torrent = try BitTorrent.parseFile(allocator, filePath);
-        var string = StringArrayList.init(allocator);
-
-        try string.appendSlice("Tracker URL: ");
-        try string.appendSlice(torrent.announce);
-        try string.append('\n');
-
-        try string.appendSlice("Length: ");
-        try string.appendSlice(try numToString(i64, allocator, torrent.info.length));
-        try string.append('\n');
-
-        try string.appendSlice("Info Hash: ");
-        const encodedInfo = try encodeBencode(allocator, torrent.decoded.dictionary.get("info").?);
-        var hash: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
-        std.crypto.hash.Sha1.hash(encodedInfo, &hash, .{});
-        try string.appendSlice(try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(&hash)}));
-        try string.append('\n');
-
-        try string.appendSlice("Piece Length: ");
-        try string.appendSlice(try numToString(i64, allocator, torrent.info.pieceLength));
-        try string.append('\n');
-
-        try string.appendSlice("Piece Hashes: ");
-        for (torrent.info.pieces) |piece| {
-            try string.append('\n');
-            const h = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(piece[0..20])});
-            try string.appendSlice(h);
-        }
-        try string.append('\n');
-
-        const jsonStr = try string.toOwnedSlice();
-        try stdout.print("{s}\n", .{jsonStr});
-    }
-
-    pub fn peers(allocator: std.mem.Allocator, filePath: []const u8) !void {
-        const torrent = try BitTorrent.parseFile(allocator, filePath);
-        const pcs = try getPeers(allocator, torrent);
-        for (pcs) |peer| {
-            try stdout.print("{}\n", .{peer});
-        }
-    }
-
-    pub fn handshake(allocator: std.mem.Allocator, filePath: []const u8, fullIp: []const u8) !void {
-        const torrent = try BitTorrent.parseFile(allocator, filePath);
-
-        var it = std.mem.splitScalar(u8, fullIp, ':');
-        const ip = it.next() orelse return error.MissingIP;
-        const port = it.next() orelse return error.MissingPort;
-
-        const address = try std.net.Address.resolveIp(ip, try std.fmt.parseInt(u16, port, 10));
-        var stream = try std.net.tcpConnectToAddress(address);
-
-        const encodedInfo = try encodeBencode(allocator, torrent.decoded.dictionary.get("info").?);
-        var hash: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
-        std.crypto.hash.Sha1.hash(encodedInfo, &hash, .{});
-
-        const serverHandshake = try doHandshake(stream, hash);
-
-        try stdout.print("Peer ID: {s}\n", .{std.fmt.bytesToHex(serverHandshake.peerId, .lower)});
-    }
-
-    pub fn downloadPiece(allocator: std.mem.Allocator, outputFile: []const u8, filePath: []const u8, pieceIndex: u32) !void {
-        const torrent = try BitTorrent.parseFile(allocator, filePath);
+    fn downloadTo(allocator: std.mem.Allocator, torrent: BitTorrent, outputFile: []const u8, pieceIndex: u32) !void {
         if (pieceIndex > torrent.info.pieces.len) return error.InvalidPieceIndex;
 
         const prs = try getPeers(allocator, torrent);
@@ -520,6 +445,85 @@ pub const Commands = struct {
         const fileWriter = output.writer();
 
         try fileWriter.writeAll(piece);
+    }
+
+    pub fn decode(allocator: std.mem.Allocator, encodedStr: []const u8) !void {
+        const decoded = decodeBencode(allocator, encodedStr) catch {
+            try stdout.print("Couldn't decode value\n", .{});
+            std.process.exit(1);
+        };
+
+        var string = StringArrayList.init(allocator);
+        try writeEncoded(decoded, string.writer());
+        const jsonStr = try string.toOwnedSlice();
+        try stdout.print("{s}\n", .{jsonStr});
+    }
+
+    pub fn info(allocator: std.mem.Allocator, filePath: []const u8) !void {
+        const torrent = try BitTorrent.parseFile(allocator, filePath);
+        var string = StringArrayList.init(allocator);
+
+        try string.appendSlice("Tracker URL: ");
+        try string.appendSlice(torrent.announce);
+        try string.append('\n');
+
+        try string.appendSlice("Length: ");
+        try string.appendSlice(try numToString(i64, allocator, torrent.info.length));
+        try string.append('\n');
+
+        try string.appendSlice("Info Hash: ");
+        const encodedInfo = try encodeBencode(allocator, torrent.decoded.dictionary.get("info").?);
+        var hash: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
+        std.crypto.hash.Sha1.hash(encodedInfo, &hash, .{});
+        try string.appendSlice(try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(&hash)}));
+        try string.append('\n');
+
+        try string.appendSlice("Piece Length: ");
+        try string.appendSlice(try numToString(i64, allocator, torrent.info.pieceLength));
+        try string.append('\n');
+
+        try string.appendSlice("Piece Hashes: ");
+        for (torrent.info.pieces) |piece| {
+            try string.append('\n');
+            const h = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(piece[0..20])});
+            try string.appendSlice(h);
+        }
+        try string.append('\n');
+
+        const jsonStr = try string.toOwnedSlice();
+        try stdout.print("{s}\n", .{jsonStr});
+    }
+
+    pub fn peers(allocator: std.mem.Allocator, filePath: []const u8) !void {
+        const torrent = try BitTorrent.parseFile(allocator, filePath);
+        const pcs = try getPeers(allocator, torrent);
+        for (pcs) |peer| {
+            try stdout.print("{}\n", .{peer});
+        }
+    }
+
+    pub fn handshake(allocator: std.mem.Allocator, filePath: []const u8, fullIp: []const u8) !void {
+        const torrent = try BitTorrent.parseFile(allocator, filePath);
+
+        var it = std.mem.splitScalar(u8, fullIp, ':');
+        const ip = it.next() orelse return error.MissingIP;
+        const port = it.next() orelse return error.MissingPort;
+
+        const address = try std.net.Address.resolveIp(ip, try std.fmt.parseInt(u16, port, 10));
+        var stream = try std.net.tcpConnectToAddress(address);
+
+        const encodedInfo = try encodeBencode(allocator, torrent.decoded.dictionary.get("info").?);
+        var hash: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
+        std.crypto.hash.Sha1.hash(encodedInfo, &hash, .{});
+
+        const serverHandshake = try doHandshake(stream, hash);
+
+        try stdout.print("Peer ID: {s}\n", .{std.fmt.bytesToHex(serverHandshake.peerId, .lower)});
+    }
+
+    pub fn downloadPiece(allocator: std.mem.Allocator, outputFile: []const u8, filePath: []const u8, pieceIndex: u32) !void {
+        const torrent = try BitTorrent.parseFile(allocator, filePath);
+        try downloadTo(allocator, torrent, outputFile, pieceIndex);
         try stdout.print("Piece {d} downloaded to {s}\n", .{ pieceIndex, outputFile });
     }
 };
