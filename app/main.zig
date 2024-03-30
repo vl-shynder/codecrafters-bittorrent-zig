@@ -297,8 +297,10 @@ pub fn main() !void {
         try string.append('\n');
 
         try string.appendSlice("Info Hash: ");
-        var hash = try torrent.info.getHash(torrent.decoded);
-        try string.appendSlice(try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(hash)}));
+        const encodedInfo = try encodeBencode(torrent.decoded.dictionary.get("info").?);
+        var hash: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
+        std.crypto.hash.Sha1.hash(encodedInfo, &hash, .{});
+        try string.appendSlice(try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(&hash)}));
         try string.append('\n');
 
         try string.appendSlice("Piece Length: ");
