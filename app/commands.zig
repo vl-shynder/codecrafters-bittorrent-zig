@@ -367,6 +367,7 @@ pub const Commands = struct {
 
         const prs = try getPeers(allocator, torrent);
         const stream = try std.net.tcpConnectToAddress(prs[1]);
+        defer stream.close();
 
         const encodedInfo = try encodeBencode(allocator, torrent.decoded.dictionary.get("info").?);
         var hash: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
@@ -525,6 +526,33 @@ pub const Commands = struct {
         const torrent = try BitTorrent.parseFile(allocator, filePath);
         try downloadTo(allocator, torrent, outputFile, pieceIndex);
         try stdout.print("Piece {d} downloaded to {s}\n", .{ pieceIndex, outputFile });
+    }
+
+    pub fn download(allocator: std.mem.Allocator, outputFile: []const u8, filePath: []const u8) !void {
+        const torrent = try BitTorrent.parseFile(allocator, filePath);
+
+        var files = std.ArrayList([]const u8).init(allocator);
+        defer files.deinit();
+        const piecesCount = torrent.info.pieces.len;
+        for (0..piecesCount) |i| {
+            const intemOutPath = try std.fmt.allocPrint(allocator, "/tmp/tmp-piece-{}", .{i});
+
+            try downloadTo(allocator, torrent, intemOutPath, @intCast(i));
+            try files.append(intemOutPath);
+        }
+
+        const output = try std.fs.cwd().createFile(outputFile, .{});
+        defer output.close();
+        const fileWriter = output.writer();
+
+        for (files.items) |tmpPiecePath| {
+            var fileContent = try std.fs.cwd().readFileAlloc(allocator, tmpPiecePath, @intCast(torrent.info.pieceLength));
+            defer allocator.free(fileContent);
+            try fileWriter.writeAll(fileContent);
+            try std.fs.cwd().deleteFile(tmpPiecePath);
+        }
+
+        try stdout.print("Downloadd {s} to {s}\n", .{ filePath, outputFile });
     }
 };
 

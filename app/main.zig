@@ -31,6 +31,10 @@ pub fn main() !void {
         const filePath = args[4];
         const pieceIndex = try std.fmt.parseInt(u32, args[5], 10);
         try Commands.downloadPiece(allocator, outputFile, filePath, pieceIndex);
+    } else if (std.mem.eql(u8, command, "download")) {
+        const outputFile = args[3];
+        const filePath = args[4];
+        try Commands.download(allocator, outputFile, filePath);
     } else {
         try stdout.print("Unknown command {s}\n", .{command});
         std.process.exit(1);
