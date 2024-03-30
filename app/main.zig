@@ -5,6 +5,14 @@ const allocator = std.heap.page_allocator;
 const StringArrayList = std.ArrayList(u8);
 const BencodeDict = std.StringArrayHashMap(BencodeValue);
 
+const Handshake = extern struct {
+    protocolLength: u8 = 19,
+    ident: [19]u8 = "BitTorrent protocol".*,
+    reserved: [8]u8 = std.mem.zeroes([8]u8),
+    infoHash: [20]u8,
+    peerId: [20]u8,
+};
+
 const BitTorrent = struct {
     decoded: BencodeValue,
     announce: []const u8,
@@ -366,6 +374,29 @@ pub fn main() !void {
                 std.mem.bigToNative(u16, port),
             });
         }
+    } else if (std.mem.eql(u8, command, "handshake")) {
+        const filename = args[2];
+        const torrent = try BitTorrent.parseFile(filename);
+
+        var it = std.mem.splitScalar(u8, args[3], ':');
+        const ip = it.next() orelse return error.MissingIP;
+        const port = it.next() orelse return error.MissingPort;
+
+        const address = try std.net.Address.resolveIp(ip, try std.fmt.parseInt(u16, port, 10));
+        var stream = try std.net.tcpConnectToAddress(address);
+        const writer = stream.writer();
+        const reader = stream.reader();
+
+        const encodedInfo = try encodeBencode(torrent.decoded.dictionary.get("info").?);
+        var hash: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
+        std.crypto.hash.Sha1.hash(encodedInfo, &hash, .{});
+        const handshake = Handshake{
+            .infoHash = hash,
+            .peerId = "00112233445566778899".*,
+        };
+        try writer.writeStruct(handshake);
+        const serverHandshake = try reader.readStruct(Handshake);
+        try stdout.print("Peer ID: {s}\n", .{std.fmt.bytesToHex(serverHandshake.peerId, .lower)});
     }
 }
 
