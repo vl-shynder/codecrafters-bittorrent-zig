@@ -1,7 +1,85 @@
 const std = @import("std");
 const stdout = std.io.getStdOut().writer();
 
+const blockSize = 16 * 1024;
 const StringArrayList = std.ArrayList(u8);
+
+const Block = struct {
+    const size = @sizeOf(@This());
+    index: u32,
+    begin: u32,
+    block: []const u8,
+    fn from_bytes(bytes: []const u8) !@This() {
+        var stream = std.io.StreamSource{
+            .const_buffer = std.io.fixedBufferStream(bytes),
+        };
+        const reader = stream.reader();
+        const index = try reader.readIntBig(u32);
+        const begin = try reader.readIntBig(u32);
+        const block = bytes[8..];
+        return Block{
+            .index = index,
+            .begin = begin,
+            .block = block,
+        };
+    }
+};
+
+const Message = struct {
+    const Tag = enum(u8) {
+        choke = 0,
+        unchoke = 1,
+        interested = 2,
+        not_interested = 3,
+        have = 4,
+        bitfield = 5,
+        request = 6,
+        piece = 7,
+        cancel = 8,
+        hearbeat,
+    };
+    tag: Tag,
+    payload: []const u8,
+
+    fn send(self: @This(), writer: anytype) !void {
+        const length: u32 = @intCast(self.payload.len + 1);
+        try writer.writeIntBig(u32, length);
+        try writer.writeByte(@intFromEnum(self.tag));
+        try writer.writeAll(self.payload);
+    }
+    fn recv(allocator: std.mem.Allocator, reader: anytype) !@This() {
+        var length: u32 = undefined;
+        while (true) {
+            length = try reader.readIntBig(u32);
+            if (length != 0) break;
+        }
+        const tag_byte = try reader.readByte();
+        const tag = std.meta.intToEnum(Tag, tag_byte) catch return error.InvalidTag;
+        var payload = try allocator.alloc(u8, length - 1);
+        const len = try reader.readAll(payload);
+        std.debug.assert(len == payload.len);
+        return Message{
+            .tag = tag,
+            .payload = payload,
+        };
+    }
+};
+
+const Request = struct {
+    const size = @sizeOf(@This());
+    index: u32,
+    begin: u32,
+    length: u32,
+    fn send(self: @This(), writer: anytype) !void {
+        const length = @This().size + 1;
+        const tag: u8 = @intFromEnum(Message.Tag.request);
+        try writer.writeIntBig(u32, length);
+        try writer.writeByte(tag);
+        try writer.writeIntBig(u32, self.index);
+        try writer.writeIntBig(u32, self.begin);
+        try writer.writeIntBig(u32, self.length);
+    }
+};
 
 const Handshake = extern struct {
     protocolLength: u8 = 19,
@@ -18,7 +96,7 @@ const BitTorrent = struct {
         length: i64,
         name: []const u8,
         pieceLength: i64,
-        pieces: []const u8,
+        pieces: [][]const u8,
     },
 
     const TorrentError = error{
@@ -61,6 +139,12 @@ const BitTorrent = struct {
         if (pieces == null) return TorrentError.InvalidInfoPieces;
         if (pieces.? != .string) return TorrentError.InvalidInfoPieces;
 
+        var psc = std.ArrayList([]const u8).init(allocator);
+        var win = std.mem.window(u8, pieces.?.string, 20, 20);
+        while (win.next()) |piece| {
+            try psc.append(piece[0..20]);
+        }
+
         return .{
             .decoded = decoded,
             .announce = announce.?.string,
@@ -68,7 +152,7 @@ const BitTorrent = struct {
                 .length = length.?.integer,
                 .name = name.?.string,
                 .pieceLength = pieceLength.?.integer,
-                .pieces = pieces.?.string,
+                .pieces = try psc.toOwnedSlice(),
             },
         };
     }
@@ -215,57 +299,7 @@ pub const Commands = struct {
         return encoded.toOwnedSlice();
     }
 
-    pub fn decode(allocator: std.mem.Allocator, encodedStr: []const u8) !void {
-        const decoded = decodeBencode(allocator, encodedStr) catch {
-            try stdout.print("Couldn't decode value\n", .{});
-            std.process.exit(1);
-        };
-
-        var string = StringArrayList.init(allocator);
-        try writeEncoded(decoded, string.writer());
-        const jsonStr = try string.toOwnedSlice();
-        try stdout.print("{s}\n", .{jsonStr});
-    }
-
-    pub fn info(allocator: std.mem.Allocator, filePath: []const u8) !void {
-        const torrent = try BitTorrent.parseFile(allocator, filePath);
-        var string = StringArrayList.init(allocator);
-
-        try string.appendSlice("Tracker URL: ");
-        try string.appendSlice(torrent.announce);
-        try string.append('\n');
-
-        try string.appendSlice("Length: ");
-        try string.appendSlice(try numToString(i64, allocator, torrent.info.length));
-        try string.append('\n');
-
-        try string.appendSlice("Info Hash: ");
-        const encodedInfo = try encodeBencode(allocator, torrent.decoded.dictionary.get("info").?);
-        var hash: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
-        std.crypto.hash.Sha1.hash(encodedInfo, &hash, .{});
-        try string.appendSlice(try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(&hash)}));
-        try string.append('\n');
-
-        try string.appendSlice("Piece Length: ");
-        try string.appendSlice(try numToString(i64, allocator, torrent.info.pieceLength));
-        try string.append('\n');
-
-        try string.appendSlice("Piece Hashes: ");
-        var win = std.mem.window(u8, torrent.info.pieces, 20, 20);
-        while (win.next()) |piece| {
-            try string.append('\n');
-            const h = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(piece[0..20])});
-            try string.appendSlice(h);
-        }
-        try string.append('\n');
-
-        const jsonStr = try string.toOwnedSlice();
-        try stdout.print("{s}\n", .{jsonStr});
-    }
-
-    pub fn peers(allocator: std.mem.Allocator, filePath: []const u8) !void {
-        const torrent = try BitTorrent.parseFile(allocator, filePath);
-
+    fn getPeers(allocator: std.mem.Allocator, torrent: BitTorrent) ![]std.net.Address {
         var client = std.http.Client{ .allocator = allocator };
 
         var query = StringArrayList.init(allocator);
@@ -303,17 +337,83 @@ pub const Commands = struct {
         var peers_entry = decodedBody.dictionary.get("peers") orelse return error.InvalidResponse;
         if (peers_entry != .string) return error.InvalidResponse;
 
-        var allPeers = std.mem.window(u8, peers_entry.string, 6, 6);
-        while (allPeers.next()) |peer| {
+        var prs = std.ArrayList(std.net.Address).init(allocator);
+        var window = std.mem.window(u8, peers_entry.string, 6, 6);
+        while (window.next()) |peer| {
             const ip = peer[0..4];
             const port = std.mem.bytesToValue(u16, peer[4..6]);
-            try stdout.print("{d}.{d}.{d}.{d}:{d}\n", .{
-                ip[0],
-                ip[1],
-                ip[2],
-                ip[3],
-                std.mem.bigToNative(u16, port),
-            });
+            const addr = std.net.Address.initIp4(ip.*, std.mem.bigToNative(u16, port));
+            try prs.append(addr);
+        }
+
+        return try prs.toOwnedSlice();
+    }
+
+    fn doHandshake(stream: std.net.Stream, infoHash: [std.crypto.hash.Sha1.digest_length]u8) !Handshake {
+        const writer = stream.writer();
+        const reader = stream.reader();
+
+        const hs = Handshake{
+            .infoHash = infoHash,
+            .peerId = "00112233445566778899".*,
+        };
+        try writer.writeStruct(hs);
+        const serverHandshake = try reader.readStruct(Handshake);
+        return serverHandshake;
+    }
+
+    pub fn decode(allocator: std.mem.Allocator, encodedStr: []const u8) !void {
+        const decoded = decodeBencode(allocator, encodedStr) catch {
+            try stdout.print("Couldn't decode value\n", .{});
+            std.process.exit(1);
+        };
+
+        var string = StringArrayList.init(allocator);
+        try writeEncoded(decoded, string.writer());
+        const jsonStr = try string.toOwnedSlice();
+        try stdout.print("{s}\n", .{jsonStr});
+    }
+
+    pub fn info(allocator: std.mem.Allocator, filePath: []const u8) !void {
+        const torrent = try BitTorrent.parseFile(allocator, filePath);
+        var string = StringArrayList.init(allocator);
+
+        try string.appendSlice("Tracker URL: ");
+        try string.appendSlice(torrent.announce);
+        try string.append('\n');
+
+        try string.appendSlice("Length: ");
+        try string.appendSlice(try numToString(i64, allocator, torrent.info.length));
+        try string.append('\n');
+
+        try string.appendSlice("Info Hash: ");
+        const encodedInfo = try encodeBencode(allocator, torrent.decoded.dictionary.get("info").?);
+        var hash: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
+        std.crypto.hash.Sha1.hash(encodedInfo, &hash, .{});
+        try string.appendSlice(try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(&hash)}));
+        try string.append('\n');
+
+        try string.appendSlice("Piece Length: ");
+        try string.appendSlice(try numToString(i64, allocator, torrent.info.pieceLength));
+        try string.append('\n');
+
+        try string.appendSlice("Piece Hashes: ");
+        for (torrent.info.pieces) |piece| {
+            try string.append('\n');
+            const h = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(piece[0..20])});
+            try string.appendSlice(h);
+        }
+        try string.append('\n');
+
+        const jsonStr = try string.toOwnedSlice();
+        try stdout.print("{s}\n", .{jsonStr});
+    }
+
+    pub fn peers(allocator: std.mem.Allocator, filePath: []const u8) !void {
+        const torrent = try BitTorrent.parseFile(allocator, filePath);
+        const pcs = try getPeers(allocator, torrent);
+        for (pcs) |peer| {
+            try stdout.print("{}\n", .{peer});
         }
     }
 
@@ -326,19 +426,104 @@ pub const Commands = struct {
 
         const address = try std.net.Address.resolveIp(ip, try std.fmt.parseInt(u16, port, 10));
         var stream = try std.net.tcpConnectToAddress(address);
-        const writer = stream.writer();
-        const reader = stream.reader();
 
         const encodedInfo = try encodeBencode(allocator, torrent.decoded.dictionary.get("info").?);
         var hash: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
         std.crypto.hash.Sha1.hash(encodedInfo, &hash, .{});
-        const hs = Handshake{
-            .infoHash = hash,
-            .peerId = "00112233445566778899".*,
-        };
-        try writer.writeStruct(hs);
-        const serverHandshake = try reader.readStruct(Handshake);
+
+        const serverHandshake = try doHandshake(stream, hash);
+
         try stdout.print("Peer ID: {s}\n", .{std.fmt.bytesToHex(serverHandshake.peerId, .lower)});
+    }
+
+    pub fn downloadPiece(allocator: std.mem.Allocator, outputFile: []const u8, filePath: []const u8, pieceIndex: u32) !void {
+        const torrent = try BitTorrent.parseFile(allocator, filePath);
+        if (pieceIndex > torrent.info.pieces.len) return error.InvalidPieceIndex;
+
+        const prs = try getPeers(allocator, torrent);
+        const stream = try std.net.tcpConnectToAddress(prs[1]);
+
+        const encodedInfo = try encodeBencode(allocator, torrent.decoded.dictionary.get("info").?);
+        var hash: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
+        std.crypto.hash.Sha1.hash(encodedInfo, &hash, .{});
+
+        const serverHandshake = try doHandshake(stream, hash);
+        if (!std.mem.eql(u8, &hash, &serverHandshake.infoHash)) {
+            try stdout.print("Handshake hash is different \n", .{});
+            std.process.exit(1);
+        }
+
+        const reader = stream.reader();
+        const writer = stream.writer();
+
+        const bitfield = try Message.recv(allocator, reader);
+        if (bitfield.tag != .bitfield) return error.InvalidBitfield;
+
+        const msg = Message{ .payload = &.{}, .tag = .interested };
+        try msg.send(writer);
+
+        const unchoke = try Message.recv(allocator, reader);
+        if (unchoke.tag != .unchoke) return error.InvalidUnchoke;
+
+        const pieceLength: usize = blk: {
+            if (pieceIndex == torrent.info.pieces.len - 1) {
+                const rem: usize = @intCast(@mod(torrent.info.length, torrent.info.pieceLength));
+                if (rem != 0) break :blk rem;
+            }
+            break :blk @intCast(torrent.info.pieceLength);
+        };
+
+        const piece = try allocator.alloc(u8, pieceLength);
+
+        const fullBlocksCount = pieceLength / blockSize;
+        const lastBlockSize = pieceLength % blockSize;
+
+        for (0..fullBlocksCount) |i| {
+            var rqst = Request{
+                .index = pieceIndex,
+                .begin = @intCast(i * blockSize),
+                .length = @intCast(lastBlockSize),
+            };
+
+            try rqst.send(writer);
+
+            const pieceBlock = try Message.recv(allocator, reader);
+            if (pieceBlock.tag != .piece) return error.InvalidPiece;
+            const block = try Block.from_bytes(pieceBlock.payload);
+            @memcpy(piece[block.begin .. block.begin + block.block.len], block.block);
+        }
+
+        if (lastBlockSize > 0) {
+            var rqst = Request{
+                .index = pieceIndex,
+                .begin = @intCast(fullBlocksCount * blockSize),
+                .length = @intCast(lastBlockSize),
+            };
+            try rqst.send(writer);
+
+            const pieceBlock = try Message.recv(allocator, reader);
+            if (pieceBlock.tag != .piece) return error.InvalidPiece;
+            const block = try Block.from_bytes(pieceBlock.payload);
+            @memcpy(piece[block.begin .. block.begin + block.block.len], block.block);
+        }
+
+        // var hs: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
+        // std.crypto.hash.Sha1.hash(piece, &hs, .{});
+
+        // const myHash = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(&hs)});
+        // _ = myHash;
+        // const pieceHash = try std.fmt.allocPrint(allocator, "{s}", .{std.fmt.fmtSliceHexLower(torrent.info.pieces[pieceIndex])});
+        // _ = pieceHash;
+
+        // try stdout.print("my hash = {s}, their hash = {s}\n", .{ myHash, pieceHash });
+        // if (!std.mem.eql(u8, myHash, pieceHash)) return error.InvalidPieceHash;
+
+        const output = try std.fs.cwd().createFile(outputFile, .{});
+        defer output.close();
+        const fileWriter = output.writer();
+
+        try fileWriter.writeAll(piece);
+        try stdout.print("Piece {d} downloaded to {s}\n", .{ pieceIndex, outputFile });
     }
 };
 

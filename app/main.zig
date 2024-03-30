@@ -26,6 +26,14 @@ pub fn main() !void {
     } else if (std.mem.eql(u8, command, "handshake")) {
         const filePath = args[2];
         try Commands.handshake(allocator, filePath, args[3]);
+    } else if (std.mem.eql(u8, command, "download_piece")) {
+        const outputFile = args[3];
+        const filePath = args[4];
+        const pieceIndex = try std.fmt.parseInt(u32, args[5], 10);
+        try Commands.downloadPiece(allocator, outputFile, filePath, pieceIndex);
+    } else {
+        try stdout.print("Unknown command {s}\n", .{command});
+        std.process.exit(1);
     }
 }
 
